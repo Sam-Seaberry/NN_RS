@@ -29,46 +29,43 @@ fn main() {
         0.0, 1.0, 0.0, 1.0
     ]);
     
-    let m = 10;
+    let m = 4;
     let A0 = x.transpose();  // Input matrix transposed
 
-    let epochs = 500000;
-    let alpha = 0.1;
+    let mut epochs = 0;
+    let alpha = 0.01;
 
     let mut costs = Vec::new();
 
-    for epoch in 0..epochs {
-        let (a1, a2, a3) = feedfrwd(A0.clone(), weights.clone(), bias.clone());
+    let mut activations: Vec<DMatrix<f32>> = Vec::new();
 
-        let error = cost(a3.clone(), y.clone());
+    loop {
+        
+        activations = feedfrwd(A0.clone(), y.clone(), weights.clone(), bias.clone(), layers.clone());
+
+        let error = cost(activations[layers-1].clone(), y.clone());
         costs.push(error.clone());
 
-        let (dc_dw3, dc_db3, dc_da2) = back1(a3.clone(), y.clone(), m, a2.clone(), weights.clone(), neurons.clone());
-        let (dc_dw2, dc_db2, dc_da1) = back2(dc_da2, a1.clone(), a2.clone(), weights.clone(), neurons.clone());
-        let (dc_dw1, dc_db1) = back3(dc_da1, a1.clone(), A0.clone(), weights.clone(), neurons.clone());
+        let (dc_dw, dc_db, dc_da) = backpropagation(activations.clone(), &mut bias, &mut weights, activations[layers-1].clone(), A0.clone(), y.clone(), neurons.clone(), layers.clone(), alpha.clone());
 
-        weights[2] -= dc_dw3 * alpha;
-        weights[1] -= dc_dw2 * alpha;
-        weights[0] -= dc_dw1 * alpha;
-
-        bias[2] -= dc_db3 * alpha;
-        bias[1] -= dc_db2 * alpha;
-        bias[0] -= dc_db1 * alpha;
-
-
-        if epoch % 20 == 0 {
-            println!("epoch: {}: cost = {:?}", epoch, costs[epoch]);
+        if epochs % 20 == 0 {
+            println!("epoch: {}: cost = {:?}", epochs, costs[epochs]);
         }
-    }
-    println!("Training complete!");
-    // Evaluate the trained network on the XOR inputs
-    let (a1, a2, a3) = feedfrwd(A0.clone(), weights.clone(), bias.clone());
 
-    // Output the final prediction for each XOR test case
+        if costs[epochs] < 0.1{
+            break;
+        }
+        epochs += 1;
+    };
+    
+    println!("Training complete!");
+    
     for i in 0..4 {
-        let output = a3[(0, i)];
+        let output = activations[layers-1][(0, i)];
         println!("XOR input: {}, output: {:.3}", &x.row(i), output);
     }
+
+   
     
 }
 
@@ -98,25 +95,154 @@ fn sigmoid(arr: &mut DMatrix<f32>) {
     arr.iter_mut().for_each(|x| *x = 1.0 / (1.0 + (-*x).exp()));
 }
 
-fn feedfrwd(input: DMatrix<f32>, weights: Vec<DMatrix<f32>>, bias: Vec<DMatrix<f32>>)
-    -> (DMatrix<f32>, DMatrix<f32>, DMatrix<f32>) {
+fn relu(arr: &mut DMatrix<f32>) {
+    arr.iter_mut().for_each(|x| *x = x.max(0.0));
+}
 
-    let mut z1 = weights[0].clone() * input.clone() + repeat_bias(&bias[0], input.clone().ncols());
-    sigmoid(&mut z1);
+fn feedfrwd(input: DMatrix<f32>, truth:DMatrix<f32>, weights: Vec<DMatrix<f32>>, bias: Vec<DMatrix<f32>>, layers: usize)
+    -> (Vec<DMatrix<f32>>) {
 
-    let mut z2 = weights[1].clone() * z1.clone() + repeat_bias(&bias[1], z1.ncols());
-    sigmoid(&mut z2);
+    let mut input = input;
+    let mut activations = Vec::new();
+    assert_eq!(weights.len(), layers);
+    assert_eq!(bias.len(), layers);
 
-    let mut z3 = weights[2].clone() * z2.clone() + repeat_bias(&bias[2], z2.ncols());
-    sigmoid(&mut z3);
-    //println!("Dimensions: {}, {}, {}", z1.nrows(), z2.nrows(),z3.nrows());
+    for i in 0..layers {
+        assert_eq!(weights[i].ncols(), input.nrows());
+        assert_eq!(bias[i].nrows(), weights[i].nrows());
 
-    (z1, z2, z3)
+        let mut z = weights[i].clone() * input.clone() + repeat_bias(&bias[i], input.ncols());
+        sigmoid(&mut z);
+
+        activations.push(z.clone());
+
+        input = z;
+
+    }
+    //activations.push(truth.clone());
+    //Note: activations[0] is the input layer
+    activations
 }
 
 // Custom function to repeat bias across columns
 fn repeat_bias(bias: &DMatrix<f32>, num_cols: usize) -> DMatrix<f32> {
     DMatrix::from_fn(bias.nrows(), num_cols, |i, _| bias[(i, 0)])
+}
+
+fn backpropagation(activations: Vec<DMatrix<f32>>, 
+    bias: &mut Vec<DMatrix<f32>>, 
+    weights: &mut Vec<DMatrix<f32>>, 
+    passthough: DMatrix<f32>,
+    input: DMatrix<f32>,
+    truth: DMatrix<f32>,
+    neurons: Vec<usize>, 
+    layer: usize,
+    alpha: f32)
+    -> (DMatrix<f32>, DMatrix<f32>, DMatrix<f32>) {
+
+    if layer == weights.len() {
+        // Output layer
+        let current_layer = layer - 1;
+        let mut d_activation = activations[current_layer].clone() - truth.clone();
+        assert_eq!(d_activation.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_activation.ncols(), truth.ncols());
+
+        d_activation = d_activation.map(|x| x * 2.0);
+        d_activation = d_activation.map(|x| x / truth.ncols() as f32);
+        assert_eq!(d_activation.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_activation.ncols(), truth.ncols());
+
+        // Weights derivative
+        let d_weights = d_activation.clone() * activations[current_layer - 1].transpose();
+        assert_eq!(d_weights.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_weights.ncols(), neurons[current_layer]);
+
+        // Bias derivative
+        let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+            .map(|i| d_activation.row(i).sum())
+            .collect::<Vec<f32>>());
+        assert_eq!(d_bias.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_bias.ncols(), 1);
+
+        // Layer derivative
+        let d_layer = weights[current_layer].transpose() * d_activation;
+        assert_eq!(d_layer.nrows(), neurons[current_layer]);
+        assert_eq!(d_layer.ncols(), truth.ncols());
+
+        weights[current_layer] -= alpha * d_weights.clone();
+        bias[current_layer] -= alpha * d_bias.clone();
+
+        let (d_weights_prev, d_bias_prev, d_layer_prev) = backpropagation(activations, bias, weights, d_layer.clone(), input.clone(), truth.clone(), neurons, layer - 1, alpha);
+
+
+        return (d_weights_prev, d_bias_prev, d_layer_prev);
+
+    } else if layer-1 == 0{
+
+        let current_layer = layer - 1;
+        assert_eq!(input.nrows(), neurons[0]);
+
+        let d_activations = activations[current_layer].clone().component_mul(&(activations[current_layer].clone().map(|x| x * (1.0 - x))));
+        assert_eq!(d_activations.nrows(), neurons[current_layer + 1]);
+        // dc/dz = dc/da * da/dz
+        let d_activation = d_activations.component_mul(&passthough);
+        assert_eq!(d_activation.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_activation.ncols(), passthough.ncols());
+
+        let d_weights = d_activation.clone() * input.transpose();
+        assert_eq!(d_weights.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_weights.ncols(), neurons[current_layer]);
+
+        let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+            .map(|i| d_activation.row(i).sum())
+            .collect::<Vec<f32>>());
+
+        assert_eq!(d_bias.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_bias.ncols(), 1);
+
+        let d_layer = weights[current_layer].transpose() * d_activation;
+        assert_eq!(d_layer.nrows(), neurons[current_layer]);
+
+        weights[current_layer] -= alpha * d_weights.clone();
+        bias[current_layer] -= alpha * d_bias.clone();
+
+        return (d_weights, d_bias, d_layer);
+        
+    } else {
+        // Hidden layers
+        let current_layer = layer -1;
+        let d_sigmoid = activations[current_layer].clone().component_mul(&(activations[current_layer].clone().map(|x| x * (1.0 - x))));
+        assert_eq!(d_sigmoid.nrows(), neurons[current_layer + 1]);
+        // dc/dz = dc/da * da/dz
+        let d_activation = d_sigmoid.component_mul(&passthough);
+        assert_eq!(d_activation.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_activation.ncols(), passthough.ncols());
+
+        // Weights derivative
+        let d_weights = d_activation.clone() * activations[current_layer - 1].transpose();
+        assert_eq!(d_weights.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_weights.ncols(), neurons[current_layer]);
+
+        // Bias derivative
+        let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+            .map(|i| d_activation.row(i).sum())
+            .collect::<Vec<f32>>());
+        assert_eq!(d_bias.nrows(), neurons[current_layer + 1]);
+        assert_eq!(d_bias.ncols(), 1);
+
+        // Layer derivative
+        let d_layer = weights[current_layer].transpose() * d_activation;
+        assert_eq!(d_layer.nrows(), neurons[current_layer]);
+        assert_eq!(d_layer.ncols(), passthough.ncols());
+
+        let (d_weights_prev, d_bias_prev, d_layer_prev) = backpropagation(activations, bias, weights, d_layer.clone(), input.clone(), truth.clone(), neurons, layer - 1, alpha);
+
+        weights[current_layer] -= alpha * d_weights.clone();
+        bias[current_layer] -= alpha * d_bias.clone();
+       
+
+        return (d_weights, d_bias, d_layer.clone());
+    }
 }
 
 fn back1(y_hat: DMatrix<f32>, y: DMatrix<f32>, m: usize, z2: DMatrix<f32>, weights: Vec<DMatrix<f32>>, neurons: Vec<usize>)
@@ -125,16 +251,21 @@ fn back1(y_hat: DMatrix<f32>, y: DMatrix<f32>, m: usize, z2: DMatrix<f32>, weigh
     assert_eq!(z2.nrows(), neurons[2]);
     assert_eq!(z2.ncols(), y_hat.ncols());
 
-    let dc_dz3 = y_hat - y;
+    //calculate the derivative of the cost function
+    let mut dc_dz3 = y_hat - y;
+    dc_dz3 = dc_dz3.map(|x| x * 2.0);
+    //calculate the derivative of the activation function
     let dc_dz3 = dc_dz3.map(|x| x / m as f32);
     
     assert_eq!(dc_dz3.nrows(), neurons[3]);
     assert_eq!(dc_dz3.ncols(), 4);
 
+    //calculate the derivative of the weights
     let dc_dw3 = dc_dz3.clone() * z2.transpose();
     assert_eq!(dc_dw3.nrows(), neurons[3]);
     assert_eq!(dc_dw3.ncols(), neurons[2]);
 
+    //calculate the derivative of the bias
     let dc_db3 = DMatrix::from_row_slice(dc_dw3.nrows(), 1, &(0..dc_dz3.clone()
         .nrows())
         .map(|i| dc_dz3.row(i)
@@ -144,6 +275,7 @@ fn back1(y_hat: DMatrix<f32>, y: DMatrix<f32>, m: usize, z2: DMatrix<f32>, weigh
     assert_eq!(dc_db3.nrows(), neurons[3]);
     assert_eq!(dc_db3.ncols(), 1);
 
+    //calculate the derivative of the activation function
     let dc_da2 = weights[2].transpose() * dc_dz3.clone();
     assert_eq!(dc_da2.nrows(), neurons[2]);
     assert_eq!(dc_da2.ncols(), 4);
@@ -157,17 +289,20 @@ fn back2(dc_da2: DMatrix<f32>, z1: DMatrix<f32>, z2: DMatrix<f32>, weights: Vec<
     assert_eq!(z1.nrows(), neurons[1]);
     assert_eq!(z1.ncols(), 4);
 
-    //println!("Dimensions: {}, {}", z2.clone().map(|x| 1.0 - x).ncols(),z2.clone().ncols());
-
+    
+    //calculate the derivative of the activation function
     let da2_dz2 = z2.clone().component_mul(&(z2.clone().map(|x| x*(1.0 - x))));
+    //calculate the derivative of the cost function
     let dc_dz2 = dc_da2.component_mul(&da2_dz2);
     assert_eq!(dc_dz2.nrows(), neurons[2]);
     assert_eq!(dc_dz2.ncols(), 4);
 
+    //calculate the derivative of the weights
     let dc_dw2 = dc_dz2.clone() * z1.transpose();
     assert_eq!(dc_dw2.nrows(), neurons[2]);
     assert_eq!(dc_dw2.ncols(), neurons[1]);
 
+    //calculate the derivative of the bias
     let dc_db2 = DMatrix::from_row_slice(dc_dw2.nrows(), 1, &(0..dc_dw2.clone()
         .nrows())
         .map(|i| dc_dw2.row(i)
@@ -177,6 +312,7 @@ fn back2(dc_da2: DMatrix<f32>, z1: DMatrix<f32>, z2: DMatrix<f32>, weights: Vec<
     assert_eq!(dc_db2.nrows(), neurons[2]);
     assert_eq!(dc_db2.ncols(), 1);
 
+    //calculate the derivative of the activation function
     let dc_da1 = weights[1].transpose() * dc_dz2;
     assert_eq!(dc_da1.nrows(), neurons[2]);
     assert_eq!(dc_da1.ncols(), 4);
