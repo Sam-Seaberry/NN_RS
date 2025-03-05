@@ -30,12 +30,19 @@ impl NeuralNetwork {
     }
     pub fn train(&mut self, input: DMatrix<f32>, truth: DMatrix<f32>, epochs: usize) {
         let mut activations = self.feedfrwd(input.clone());
-        for _ in 0..epochs {
+        for cnt in 0..epochs {
             activations = self.feedfrwd(input.clone());
-            let (d_weights, d_bias, d_layer) = self.backpropagation(activations.clone(), DMatrix::zeros(1, 1), input.clone(), truth.clone(), self.layers);
+            let (d_weights, d_bias, d_layer) = self.backpropagation(activations.clone(), 
+                                                                                                        DMatrix::zeros(1, 1), 
+                                                                                                        input.clone(), 
+                                                                                                        truth.clone(), 
+                                                                                                        &mut Vec::new(), 
+                                                                                                        &mut Vec::new(), 
+                                                                                                        self.layers);
             
             let error = self.cost(activations[self.layers-1].clone(), truth.clone());
             if error < 1e-3 {
+                println!("Epcoh: {}", cnt);
                 break;
             }
             println!("Error: {}", error);
@@ -74,6 +81,10 @@ impl NeuralNetwork {
     
     pub fn relu(arr: &mut DMatrix<f32>) {
         arr.iter_mut().for_each(|x| *x = x.max(0.0));
+    }
+    pub fn softmax(arr: &mut DMatrix<f32>){
+        let sum: f32 = arr.iter().map(|x| x.exp()).sum();
+        arr.iter_mut().for_each(|x| *x = x.exp() / sum);
     }
     
     pub fn feedfrwd(&self, input: DMatrix<f32>) -> Vec<DMatrix<f32>> {
@@ -115,6 +126,8 @@ impl NeuralNetwork {
         passthough: DMatrix<f32>,
         input: DMatrix<f32>,
         truth: DMatrix<f32>,
+        der_weights: &mut Vec<DMatrix<f32>>,
+         der_bias: &mut Vec<DMatrix<f32>>,
         layer: usize)
         -> (DMatrix<f32>, DMatrix<f32>, DMatrix<f32>) {
 
@@ -150,8 +163,14 @@ impl NeuralNetwork {
             self.weights[current_layer] -= self.alpha * d_weights.clone();
             self.bias[current_layer] -= self.alpha * d_bias.clone();
 
-            let (d_weights_prev, d_bias_prev, d_layer_prev) = self.backpropagation(activations, d_layer.clone(), input.clone(), truth.clone(), layer - 1);
+            der_weights.push(d_weights.clone());
+            der_bias.push(d_bias.clone());
 
+            //self.weights[current_layer] -= self.alpha * d_weights.clone();
+            //self.bias[current_layer] -= self.alpha * d_bias.clone();
+
+            let (d_weights_prev, d_bias_prev, d_layer_prev) = self.backpropagation(activations, d_layer.clone(), input.clone(), truth.clone(),der_weights, der_bias, layer - 1);
+            
 
             return (d_weights, d_bias, d_layer);
 
@@ -181,8 +200,27 @@ impl NeuralNetwork {
             let d_layer = self.weights[current_layer].transpose() * d_activation;
             assert_eq!(d_layer.nrows(), self.neurons[current_layer]);
 
-            self.weights[current_layer] -= self.alpha * d_weights.clone();
-            self.bias[current_layer] -= self.alpha * d_bias.clone();
+            //println!("Weights: {:?}", der_weights[1].ncols());
+            //println!("Bias: {:?}", self.weights[1].clone().ncols());
+
+            der_weights.push(d_weights.clone());
+            der_bias.push(d_bias.clone());
+
+            der_weights.reverse();
+            der_bias.reverse();
+            
+            for i in 0..der_weights.len()-1 {
+                assert_eq!(der_weights[i].nrows(), self.weights[i].nrows());
+                assert_eq!(der_weights[i].ncols(), self.weights[i].ncols());
+                assert_eq!(der_bias[i].nrows(), self.bias[i].nrows());
+                assert_eq!(der_bias[i].ncols(), self.bias[i].ncols());
+
+                self.weights[i] -= self.alpha * der_weights[i].clone();
+                self.bias[i] -= self.alpha * der_bias[i].clone();
+            }
+
+            //self.weights[current_layer] -= self.alpha * d_weights.clone();
+            //self.bias[current_layer] -= self.alpha * d_bias.clone();
 
             return (d_weights, d_bias, d_layer);
             
@@ -213,10 +251,14 @@ impl NeuralNetwork {
             assert_eq!(d_layer.nrows(), self.neurons[current_layer]);
             assert_eq!(d_layer.ncols(), passthough.ncols());
 
-            let (d_weights_prev, d_bias_prev, d_layer_prev) = self.backpropagation(activations, d_layer.clone(), input.clone(), truth.clone(), layer - 1);
+            der_weights.push(d_weights.clone());
+            der_bias.push(d_bias.clone());
 
-            self.weights[current_layer] -= self.alpha * d_weights.clone();
-            self.bias[current_layer] -= self.alpha * d_bias.clone();
+            let (d_weights_prev, d_bias_prev, d_layer_prev) = self.backpropagation(activations, d_layer.clone(), input.clone(), truth.clone(), der_weights, der_bias, layer - 1);
+
+            //self.weights[current_layer] -= self.alpha * d_weights.clone();
+            //self.bias[current_layer] -= self.alpha * d_bias.clone();
+            
 
             return (d_weights, d_bias, d_layer);
         }
