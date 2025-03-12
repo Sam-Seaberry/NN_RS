@@ -1,6 +1,7 @@
 use nalgebra::{DMatrix};
 use std::env;
 use rand::prelude::*;
+use std::fmt;
 
 pub enum Activation {
     Sigmoid,
@@ -82,11 +83,140 @@ pub enum Pooling {
     Average,
 }
 
-struct ConvolutionNN<'a> {
+pub struct ConvolutionNN<'a> {
     layers: &'a mut Vec<LayerConfig>,
     optimizer: Optimizer,
     loss: Loss,
     input: Vec<DMatrix<f32>>,
+}
+
+impl fmt::Display for Activation {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+       match self {
+           Activation::Sigmoid => write!(f, "Sigmoid"),
+           Activation::Relu => write!(f, "Relu"),
+           Activation::Tanh => write!(f, "Tanh"),
+           Activation::Softmax => write!(f, "Softmax"),
+
+       }
+    }
+}
+
+impl Activation {
+    pub fn sigmoid(x: f32) -> f32 {
+        1.0 / (1.0 + (-x).exp())
+    }
+
+    pub fn sigmoid_prime(x: f32) -> f32 {
+        Activation::sigmoid(x) * (1.0 - Activation::sigmoid(x))
+    }
+
+    pub fn relu(x: f32) -> f32 {
+        x.max(0.0)
+    }
+
+    pub fn relu_prime(x: f32) -> f32 {
+        if x > 0.0 {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    pub fn tanh(x: f32) -> f32 {
+        x.tanh()
+    }
+
+    pub fn tanh_prime(x: f32) -> f32 {
+        1.0 - Activation::tanh(x).powi(2)
+    }
+
+    pub fn softmax(x: DMatrix<f32>) -> DMatrix<f32> {
+        let sum = x.iter().map(|v| v.exp()).sum::<f32>();
+        x.exp() / sum
+    }
+
+    pub fn softmax_prime(x: &DMatrix<f32>) -> DMatrix<f32> {
+        Activation::softmax(x.clone()) * (Activation::softmax(x.clone()).map(|v| 1.0 - v))
+    }
+}
+
+impl Optimizer {
+    pub fn sgd(x:DMatrix<f32>, y:DMatrix<f32>) {
+        // SGD
+
+    }
+
+    pub fn adam() {
+        // Adam
+    }
+
+    pub fn rmsprop() {
+        // RMSprop
+    }
+}
+
+impl Loss {
+    fn binary_cross_entrapy(&self, y_pred: Vec<DMatrix<f32>>, y_true: Vec<DMatrix<f32>>) -> f32 {
+        let mut loss = 0.0;
+        for i in 0..y_pred.len() {
+            let pred = &y_pred[i];
+            let bin = &y_true[i];
+            for j in 0..pred.nrows() {
+                for k in 0..pred.ncols() {
+                    loss += -1.0 * (bin[(j, k)] * pred[(j, k)].ln() + (1.0 - bin[(j, k)]) * (1.0 - pred[(j, k)]).ln());
+                }
+            }
+        }
+        loss
+    }
+
+    fn binary_cross_entrapy_prime(&self, y_pred: Vec<DMatrix<f32>>, y_true: Vec<DMatrix<f32>>) -> Vec<DMatrix<f32>> {
+        let mut dloss = Vec::new();
+        for i in 0..y_pred.len() {
+            let pred = &y_pred[i];
+            let bin = &y_true[i];
+            let mut dloss_input = DMatrix::zeros(pred.nrows(), pred.ncols());
+            for j in 0..pred.nrows() {
+                for k in 0..pred.ncols() {
+                    dloss_input[(j, k)] = -1.0 * (bin[(j, k)] / pred[(j, k)] - (1.0 - bin[(j, k)]) / (1.0 - pred[(j, k)]));
+                }
+            }
+            dloss.push(dloss_input.clone());
+        }
+        dloss
+    }
+
+    fn mean_squared_error(&self, y_pred: Vec<DMatrix<f32>>, y_true: Vec<DMatrix<f32>>) -> f32 {
+        let mut loss = 0.0;
+        for i in 0..y_pred.len() {
+            let pred = &y_pred[i];
+            let bin = &y_true[i];
+            for j in 0..pred.nrows() {
+                for k in 0..pred.ncols() {
+                    loss += (bin[(j, k)] - pred[(j, k)]).powi(2);
+                }
+            }
+        }
+        loss
+    }
+
+    fn mean_squared_error_prime(&self, y_pred: Vec<DMatrix<f32>>, y_true: Vec<DMatrix<f32>>) -> Vec<DMatrix<f32>> {
+        let mut dloss = Vec::new();
+        for i in 0..y_pred.len() {
+            let pred = &y_pred[i];
+            let bin = &y_true[i];
+            let mut dloss_input = DMatrix::zeros(pred.nrows(), pred.ncols());
+            for j in 0..pred.nrows() {
+                for k in 0..pred.ncols() {
+                    dloss_input[(j, k)] = 2.0 * (pred[(j, k)] - bin[(j, k)]);
+                }
+            }
+            dloss.push(dloss_input.clone());
+        }
+        dloss
+    }
+    
 }
 
 
@@ -121,9 +251,40 @@ impl<'a> ConvolutionNN<'a> {
         }
         
     }
+
+    pub fn view_network(&self){
+        for layer in self.layers.iter(){
+            match layer.layer_type{
+                LayerType::Dense=>{
+                    let dense = layer.dense.as_ref().unwrap();
+                    println!("Dense Layer: Units: {}, Activation: {}", dense.units, dense.activation);
+                },
+                LayerType::Conv2D=>{
+                    let conv2d = layer.conv2d.as_ref().unwrap();
+                    println!("Conv2D Layer: Filters Shape: {}, Kernel Size: {:?}, Activation: {}", conv2d.filters_shape, conv2d.kernel_size, conv2d.activation);
+                },
+                LayerType::Dropout=>{
+                    let dropout = layer.dropout.as_ref().unwrap();
+                    println!("Dropout Layer: Rate: {}", dropout.rate);
+                },
+                LayerType::Flatten=>{
+                    let flatten = layer.flatten.as_ref().unwrap();
+                    println!("Flatten Layer: Input Shape: {:?}", flatten.input_shape);
+                },
+                LayerType::MaxPooling2D=>{
+                    let max_pooling = layer.max_pooling.as_ref().unwrap();
+                    println!("MaxPooling2D Layer: Pool Size: {:?}, Stride: {}", max_pooling.pool_size, max_pooling.stride);
+                },
+                _=>{},
+            }
+        }
+    }
     
-    pub fn train(&self, x: DMatrix<f32>, y: DMatrix<f32>, epochs: usize) {
-        
+    pub fn train(&mut self, x: Vec<DMatrix<f32>>, y: DMatrix<f32>, epochs: usize) {
+        for i in 0..epochs {
+            self.forward(x.clone(), y.clone());
+            self.backwards(x.clone(), y.clone());
+        }
        
     }
 
@@ -184,41 +345,22 @@ impl<'a> ConvolutionNN<'a> {
         }
     }
 
+    fn loss(&self, x: Vec<DMatrix<f32>>, y: Vec<DMatrix<f32>>) -> f32 {
+        let mut loss_val:f32 = 0.0;
+        match self.loss {
+            Loss::BinaryCrossEntropy => {loss_val = self.loss.binary_cross_entrapy(x, y)},
+            Loss::MeanSquaredError => {loss_val = self.loss.mean_squared_error(x, y)},
+        }
+        loss_val
+    }
+
     fn xavier_init(rows: usize, cols: usize) -> DMatrix<f32> {
         let mut rng = rand::thread_rng();
         let std_dev = (2.0 / (rows + cols) as f32).sqrt();
         DMatrix::from_fn(rows, cols, |_, _| rng.gen_range(-std_dev..std_dev))
     }
 
-    fn binary_cross_entrapy(y_pred: Vec<DMatrix<f32>>, y_true: Vec<DMatrix<f32>>) -> f32 {
-        let mut loss = 0.0;
-        for i in 0..y_pred.len() {
-            let pred = &y_pred[i];
-            let bin = &y_true[i];
-            for j in 0..pred.nrows() {
-                for k in 0..pred.ncols() {
-                    loss += -1.0 * (bin[(j, k)] * pred[(j, k)].ln() + (1.0 - bin[(j, k)]) * (1.0 - pred[(j, k)]).ln());
-                }
-            }
-        }
-        loss
-    }
-
-    fn binary_cross_entrapy_prime(y_pred: Vec<DMatrix<f32>>, y_true: Vec<DMatrix<f32>>) -> Vec<DMatrix<f32>> {
-        let mut dloss = Vec::new();
-        for i in 0..y_pred.len() {
-            let pred = &y_pred[i];
-            let bin = &y_true[i];
-            let mut dloss_input = DMatrix::zeros(pred.nrows(), pred.ncols());
-            for j in 0..pred.nrows() {
-                for k in 0..pred.ncols() {
-                    dloss_input[(j, k)] = -1.0 * (bin[(j, k)] / pred[(j, k)] - (1.0 - bin[(j, k)]) / (1.0 - pred[(j, k)]));
-                }
-            }
-            dloss.push(dloss_input.clone());
-        }
-        dloss
-    }
+    
 
     
 

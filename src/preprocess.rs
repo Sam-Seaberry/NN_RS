@@ -14,7 +14,7 @@ struct MnistData {
 #[derive(Debug)]
 pub struct MnistImage {
     pub image: Array2<f64>,
-    pub classification: u8,
+    pub classification: Vec<f32>,
 }
 
 impl MnistData {
@@ -71,7 +71,7 @@ pub fn load_data(dataset_name: &str) -> Result<Vec<MnistImage>, std::io::Error> 
     for (image, classification) in images.into_iter().zip(classifications.into_iter()) {
         ret.push(MnistImage {
             image,
-            classification,
+            classification: value_to_vec(classification as f32),
         })
     }
 
@@ -97,4 +97,18 @@ pub fn create_ndmatrix_from_mnist_image(image: &MnistImage, shape: Vec<usize>) -
 
     matrix
 
+}
+
+fn value_to_vec(value: f32)->Vec<f32>{
+    let mut ret:Vec<f32> = Vec::new();
+    for i in 0..(value as i32){
+        ret.push(0.0);
+    }
+    ret.push(1.0);
+    if value != 9.0{
+        for i in (value as i32)..9{
+            ret.push(0.0);
+        }
+    }
+    ret
 }

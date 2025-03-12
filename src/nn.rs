@@ -28,10 +28,23 @@ impl NeuralNetwork {
             alpha,
         }
     }
-    pub fn train(&mut self, input: DMatrix<f32>, truth: DMatrix<f32>, epochs: usize) {
-        let mut activations = self.feedfrwd(input.clone());
+    pub fn train(&mut self, input: Vec<DMatrix<f32>>, truth: Vec<DMatrix<f32>>, epochs: usize) {
+        println!("Training on {} Images", input.len());
+        let mut activations = Vec::new();
         for cnt in 0..epochs {
-            activations = self.feedfrwd(input.clone());
+            for j in 0..input.len() {
+                let i = input[j].transpose();
+                let y = truth[j].clone();
+                activations = self.feedfrwd(i.clone());
+                let (d_weights, d_bias, d_layer) = self.backpropagation(activations.clone(), 
+                                                                                                        DMatrix::zeros(1, 1), 
+                                                                                                        i.clone(), 
+                                                                                                        y.clone(), 
+                                                                                                        &mut Vec::new(), 
+                                                                                                        &mut Vec::new(), 
+                                                                                                        self.layers);
+            
+            /*activations = self.feedfrwd(input.clone());
             let (d_weights, d_bias, d_layer) = self.backpropagation(activations.clone(), 
                                                                                                         DMatrix::zeros(1, 1), 
                                                                                                         input.clone(), 
@@ -39,13 +52,20 @@ impl NeuralNetwork {
                                                                                                         &mut Vec::new(), 
                                                                                                         &mut Vec::new(), 
                                                                                                         self.layers);
+            */
             
-            let error = self.cost(activations[self.layers-1].clone(), truth.clone());
+                
+                //println!("Image Num: {}, Epoch: {}", j, cnt); 
+            }
+
+            let error = self.cost(activations[self.layers-1].clone(), truth[0].clone());
             if error < 1e-3 {
                 println!("Epcoh: {}", cnt);
                 break;
             }
-            println!("Error: {}", error);
+            if cnt % 100 == 0 {
+                println!("Epoch: {}, Error: {}", cnt, error);
+            }
         }
     }
     pub fn xavier_init(rows: usize, cols: usize) -> DMatrix<f32> {

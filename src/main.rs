@@ -10,12 +10,12 @@ mod preprocess;
 fn main() {
     env::set_var("RUST_BACKTRACE", "1");
     let mut images_list:Vec<DMatrix<f32>> = Vec::new();
-    let mut lables_list:Vec<u8> = Vec::new();
+    let mut lables_list:Vec<Vec<f32>> = Vec::new();
     match preprocess::load_data("./res/t10k"){
         Ok(images) => {
             for i in 0..images.len(){
-                images_list.push(preprocess::create_ndmatrix_from_mnist_image(&images[i], vec![28, 28]));
-                lables_list.push(images[i].classification);
+                images_list.push(preprocess::create_ndmatrix_from_mnist_image(&images[i], vec![1,784]));
+                lables_list.push(images[i].classification.clone());
             }
         },
         Err(e) => {
@@ -106,7 +106,7 @@ fn main() {
         println!("Backward {}: {}", i, backwards[i]);
     }*/
 
-    let mut nn = nn::NeuralNetwork::new(vec![2, 6, 4, 6, 1], 1.5);
+    let mut nn = nn::NeuralNetwork::new(vec![784, 1000, 400, 60, 10], 0.0001);
     let x = DMatrix::from_row_slice(4, 2, &[
           0.0, 0.0, 
           1.0, 0.0, 
@@ -116,12 +116,27 @@ fn main() {
     let y = DMatrix::from_row_slice(1, 4, &[
         0.0, 1.0, 0.0, 1.0
     ]);
-    let epochs = 10000;
-    nn.train(x.transpose().clone(), y.clone(), epochs);
-    for i in 0..4 {
-        let output = nn.predict(x.transpose().clone());
-        println!("XOR input: {}, output: {:.3}", &x.row(i), output);
-    }
+    let truth  = DMatrix::from_row_slice(1, 4, &[
+        0.0, 1.0, 1.0, 0.0
+    ]);
     
+    let truth = convert_to_matrices(lables_list.clone(), 10, 1);
+    
+    let epochs = 10000;
+    nn.train(images_list[0..5].to_vec(), truth[0..5].to_vec(), epochs);
+    
+    //for i in 0..4 {
+      //  let output = nn.predict(x.transpose().clone());
+        //println!("XOR input: {}, output: {:.3}", &x.row(i), output);
+    //}
+    
+}
+
+fn convert_to_matrices(data: Vec<Vec<f32>>, rows: usize, cols: usize) -> Vec<DMatrix<f32>> {
+    data.into_iter()
+        .map(|flat_vec| {
+            assert_eq!(flat_vec.len(), rows * cols, "The length of the flat vector does not match the specified dimensions.");
+            DMatrix::from_vec(rows, cols, flat_vec)})
+        .collect()
 }
 
