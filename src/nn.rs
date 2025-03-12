@@ -5,25 +5,56 @@ use std::env;
 pub struct NeuralNetwork {
     weights: Vec<DMatrix<f32>>,
     bias: Vec<DMatrix<f32>>,
+    accum_grad_weights: Vec<DMatrix<f32>>,
+    accum_grad_bias: Vec<DMatrix<f32>>,
     neurons: Vec<usize>,
+    activation: Option<Activation>,
+    cost: Option<Cost>,
+    optimizer: Option<Optimizer>,
     layers: usize,
     alpha: f32,
 }
 
+pub enum Activation {
+    Sigmoid,
+    ReLU,
+    Softmax,
+}
+pub enum Cost {
+    MSE,
+    CrossEntropy,
+}
+
+pub enum Optimizer {
+    SGD,
+    Adam,
+    RMSprop,
+}
+
 impl NeuralNetwork {
-    pub fn new(neurons: Vec<usize>, alpha: f32) -> Self {
+    pub fn new(neurons: Vec<usize>, activation: Activation, cost: Cost, optimizer: Optimizer, alpha: f32) -> Self {
         let layers = neurons.len() - 1;
         let mut weights: Vec<DMatrix<f32>> = Vec::new();
         let mut bias: Vec<DMatrix<f32>> = Vec::new();
+        let mut accumulated_weight_gradients: Vec<DMatrix<f32>> = Vec::new();
+        let mut accumulated_bias_gradients: Vec<DMatrix<f32>> = Vec::new();
         for i in 0..layers {
             weights.push(NeuralNetwork::xavier_init(neurons[i + 1], neurons[i]));
             bias.push(NeuralNetwork::xavier_init(neurons[i + 1], 1));
+
+            accumulated_weight_gradients.push(DMatrix::zeros(neurons[i + 1], neurons[i]));
+            accumulated_bias_gradients.push(DMatrix::zeros(neurons[i + 1], 1));
         }
 
         NeuralNetwork {
             weights,
             bias,
+            accum_grad_weights: accumulated_weight_gradients,
+            accum_grad_bias: accumulated_bias_gradients,
             neurons,
+            activation: Some(activation),
+            cost: Some(cost),
+            optimizer: Some(optimizer),
             layers,
             alpha,
         }
@@ -31,12 +62,87 @@ impl NeuralNetwork {
     pub fn train(&mut self, input: Vec<DMatrix<f32>>, truth: Vec<DMatrix<f32>>, epochs: usize) {
         println!("Training on {} Images", input.len());
         let mut activations = Vec::new();
+
+        
+
+        match self.optimizer {
+            Some(Optimizer::SGD) => {
+                let mut velocity_weights: Vec<DMatrix<f32>> = Vec::new();
+                let mut velocity_bias: Vec<DMatrix<f32>> = Vec::new();
+                for i in 0..self.layers {
+                    velocity_weights.push(DMatrix::zeros(self.weights[i].nrows(), self.weights[i].ncols()));
+                    velocity_bias.push(DMatrix::zeros(self.bias[i].nrows(), self.bias[i].ncols()));
+                }
+            }
+            Some(Optimizer::Adam) => {
+                let mut velocity_weights: Vec<DMatrix<f32>> = Vec::new();
+                let mut velocity_bias: Vec<DMatrix<f32>> = Vec::new();
+                let mut momentum_weights: Vec<DMatrix<f32>> = Vec::new();
+                let mut momentum_bias: Vec<DMatrix<f32>> = Vec::new();
+                for i in 0..self.layers {
+                    velocity_weights.push(DMatrix::zeros(self.weights[i].nrows(), self.weights[i].ncols()));
+                    velocity_bias.push(DMatrix::zeros(self.bias[i].nrows(), self.bias[i].ncols()));
+                    momentum_weights.push(DMatrix::zeros(self.weights[i].nrows(), self.weights[i].ncols()));
+                    momentum_bias.push(DMatrix::zeros(self.bias[i].nrows(), self.bias[i].ncols())); 
+                }
+            }
+            Some(Optimizer::RMSprop) => {
+                let mut velocity_weights: Vec<DMatrix<f32>> = Vec::new();
+                let mut velocity_bias: Vec<DMatrix<f32>> = Vec::new();
+                for i in 0..self.layers {
+                    velocity_weights.push(DMatrix::zeros(self.weights[i].nrows(), self.weights[i].ncols()));
+                    velocity_bias.push(DMatrix::zeros(self.bias[i].nrows(), self.bias[i].ncols()));
+                }
+            }
+            _ => {}
+        }
+
+
         for cnt in 0..epochs {
             for j in 0..input.len() {
                 let i = input[j].transpose();
                 let y = truth[j].clone();
                 activations = self.feedfrwd(i.clone());
-                let (d_weights, d_bias, d_layer) = self.backpropagation(activations.clone(), 
+                let (batch_d_weights, batch_d_bias) = self.backprop(activations.clone(), i, y);
+
+                match self.optimizer {
+                    Some(Optimizer::SGD) => {
+                        for layer_index in 0..self.layers {
+                            self.accum_grad_weights[layer_index] += &batch_d_weights[layer_index]; // Accumulate weight gradients
+                            self.accum_grad_bias[layer_index] += &batch_d_bias[layer_index];     // Accumulate bias gradients
+                        }
+
+                    }
+                    Some(Optimizer::Adam) => {
+                        for layer_index in 0..self.layers {
+                            self.accum_grad_weights[layer_index] += &batch_d_weights[layer_index]; // Accumulate weight gradients
+                            self.accum_grad_bias[layer_index] += &batch_d_bias[layer_index];     // Accumulate bias gradients
+                        }
+                        self.adam(&velocity_weights, &velocity_bias, &momentum_weights, &momentum_bias, 0.9, 0.1, 0.000008);
+                    }
+                    Some(Optimizer::RMSprop) => {
+                        for layer_index in 0..self.layers {
+                            self.accum_grad_weights[layer_index] += &batch_d_weights[layer_index]; // Accumulate weight gradients
+                            self.accum_grad_bias[layer_index] += &batch_d_bias[layer_index];     // Accumulate bias gradients
+                        }
+                        self.rmsprop(&velocity_weights, &velocity_bias, 0.9);
+                    }
+                    _ => {
+                        for i in 0..batch_d_weights.len() {
+                            assert_eq!(batch_d_weights[i].nrows(), self.weights[i].nrows());
+                            assert_eq!(batch_d_weights[i].ncols(), self.weights[i].ncols());
+                            assert_eq!(batch_d_bias[i].nrows(), self.bias[i].nrows());
+                            assert_eq!(batch_d_bias[i].ncols(), self.bias[i].ncols());
+
+                            self.weights[i] -= self.alpha * &batch_d_weights[i];
+                            self.bias[i] -= self.alpha * &batch_d_bias[i];
+                        }
+                    }
+                }
+
+
+
+                 /*let (d_weights, d_bias, d_layer) = self.backpropagation_recersive(activations.clone(), 
                                                                                                         DMatrix::zeros(1, 1), 
                                                                                                         i.clone(), 
                                                                                                         y.clone(), 
@@ -44,21 +150,14 @@ impl NeuralNetwork {
                                                                                                         &mut Vec::new(), 
                                                                                                         self.layers);
             
-            /*activations = self.feedfrwd(input.clone());
-            let (d_weights, d_bias, d_layer) = self.backpropagation(activations.clone(), 
-                                                                                                        DMatrix::zeros(1, 1), 
-                                                                                                        input.clone(), 
-                                                                                                        truth.clone(), 
-                                                                                                        &mut Vec::new(), 
-                                                                                                        &mut Vec::new(), 
-                                                                                                        self.layers);
             */
             
-                
-                //println!("Image Num: {}, Epoch: {}", j, cnt); 
             }
-
-            let error = self.cost(activations[self.layers-1].clone(), truth[0].clone());
+            let mut error = 0.0;
+            for j in 0..input.len() {
+                error += self.cost(activations[self.layers-1].clone(), truth[j].clone());
+            error = error/input.len() as f32;
+            }
             if error < 1e-3 {
                 println!("Epcoh: {}", cnt);
                 break;
@@ -141,7 +240,7 @@ impl NeuralNetwork {
         DMatrix::from_fn(bias.nrows(), num_cols, |i, _| bias[(i, 0)])
     }
     
-    pub fn backpropagation(&mut self, 
+    pub fn backpropagation_recersive(&mut self, 
         activations: Vec<DMatrix<f32>>, 
         passthough: DMatrix<f32>,
         input: DMatrix<f32>,
@@ -189,7 +288,7 @@ impl NeuralNetwork {
             //self.weights[current_layer] -= self.alpha * d_weights.clone();
             //self.bias[current_layer] -= self.alpha * d_bias.clone();
 
-            let (d_weights_prev, d_bias_prev, d_layer_prev) = self.backpropagation(activations, d_layer.clone(), input.clone(), truth.clone(),der_weights, der_bias, layer - 1);
+            let (d_weights_prev, d_bias_prev, d_layer_prev) = self.backpropagation_recersive(activations, d_layer.clone(), input.clone(), truth.clone(),der_weights, der_bias, layer - 1);
             
 
             return (d_weights, d_bias, d_layer);
@@ -274,7 +373,7 @@ impl NeuralNetwork {
             der_weights.push(d_weights.clone());
             der_bias.push(d_bias.clone());
 
-            let (d_weights_prev, d_bias_prev, d_layer_prev) = self.backpropagation(activations, d_layer.clone(), input.clone(), truth.clone(), der_weights, der_bias, layer - 1);
+            let (d_weights_prev, d_bias_prev, d_layer_prev) = self.backpropagation_recersive(activations, d_layer.clone(), input.clone(), truth.clone(), der_weights, der_bias, layer - 1);
 
             //self.weights[current_layer] -= self.alpha * d_weights.clone();
             //self.bias[current_layer] -= self.alpha * d_bias.clone();
@@ -283,7 +382,176 @@ impl NeuralNetwork {
             return (d_weights, d_bias, d_layer);
         }
     }
+
+    fn backprop(&mut self, activations: Vec<DMatrix<f32>>, 
+        input: DMatrix<f32>,
+        truth: DMatrix<f32>)-> (Vec<DMatrix<f32>>, Vec<DMatrix<f32>>) {
+            let mut der_weights = Vec::new();
+            let mut der_bias = Vec::new();
+            let mut passthrough: DMatrix<f32> = DMatrix::zeros(self.neurons[self.layers - 1], truth.ncols());
+
+            for cnt in (0..self.layers).rev(){
+                if cnt == self.layers -1 {
+                    // Output layer
+                    let mut d_activation = &activations[cnt] - &truth;
+                    assert_eq!(d_activation.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_activation.ncols(), truth.ncols());
+        
+                    // Weights derivative
+                    let d_weights = if cnt > 0 {
+                        &d_activation * &activations[cnt - 1].transpose()
+                    } else {
+                        &d_activation * &input.transpose()
+                    };
+
+                    assert_eq!(d_weights.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_weights.ncols(), self.neurons[cnt]);
+        
+                    // Bias derivative
+                    let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                        .map(|i| d_activation.row(i).sum())
+                        .collect::<Vec<f32>>());
+                    assert_eq!(d_bias.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_bias.ncols(), 1);
+        
+                    // Layer derivative
+                    passthrough  = &self.weights[cnt].transpose() * &d_activation;
+                    assert_eq!(passthrough.nrows(), self.neurons[cnt]);
+                    assert_eq!(passthrough.ncols(), truth.ncols());
+        
+                    der_weights.push(d_weights);
+                    der_bias.push(d_bias);
+
+
+                    continue;
+
+
+                }
+                else if cnt == 0{
+                    // Input layer
+                    assert_eq!(input.nrows(), self.neurons[0]);
+
+                    let d_activations = &activations[cnt].component_mul(&(&activations[cnt].map(|x| x * (1.0 - x))));
+                    assert_eq!(d_activations.nrows(), self.neurons[cnt + 1]);
+                    // dc/dz = dc/da * da/dz
+                    let d_activation = &d_activations.component_mul(&passthrough);
+                    assert_eq!(d_activation.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_activation.ncols(), passthrough.ncols());
+
+                    let d_weights = d_activation * &input.transpose();
+                    assert_eq!(d_weights.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_weights.ncols(), self.neurons[cnt]);
+
+                    let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                        .map(|i| d_activation.row(i).sum())
+                        .collect::<Vec<f32>>());
+
+                    assert_eq!(d_bias.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_bias.ncols(), 1);
+
+                    //println!("Weights: {:?}", der_weights[1].ncols());
+                    //println!("Bias: {:?}", self.weights[1].clone().ncols());
+
+                    der_weights.push(d_weights);
+                    der_bias.push(d_bias);
+
+                    continue;
+
+                }
+                let d_sigmoid = &activations[cnt].component_mul(&(activations[cnt].clone().map(|x| x * (1.0 - x))));
+                assert_eq!(d_sigmoid.nrows(), self.neurons[cnt + 1]);
+                // dc/dz = dc/da * da/dz
+                let d_activation = d_sigmoid.component_mul(&passthrough);
+                assert_eq!(d_activation.nrows(), self.neurons[cnt + 1]);
+                assert_eq!(d_activation.ncols(), passthrough.ncols());
+
+                // Weights derivative
+                let d_weights = &d_activation * &activations[cnt - 1].transpose();
+                assert_eq!(d_weights.nrows(), self.neurons[cnt + 1]);
+                assert_eq!(d_weights.ncols(), self.neurons[cnt]);
+
+                // Bias derivative
+                let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                    .map(|i| d_activation.row(i).sum())
+                    .collect::<Vec<f32>>());
+                assert_eq!(d_bias.nrows(), self.neurons[cnt + 1]);
+                assert_eq!(d_bias.ncols(), 1);
+
+                // Layer derivative
+                passthrough = &self.weights[cnt].transpose() * d_activation;
+                assert_eq!(passthrough.nrows(), self.neurons[cnt]);
+
+                der_weights.push(d_weights);
+                der_bias.push(d_bias);
+
+            }
+
+            der_weights.reverse();
+            der_bias.reverse();
+
+            /*if self.optimizer == Optimizer::SGD {
+                return (der_weights, der_bias);
+            }
+            else if self.optimizer == Optimizer::Adam {
+                self.adam(der_weights, der_bias);
+            }
+            else if self.optimizer == Optimizer::RMSprop {
+                self.rmsprop(der_weights, der_bias);
+            }
+            else{
+            
+                for i in 0..der_weights.len(){
+                    assert_eq!(der_weights[i].nrows(), self.weights[i].nrows());
+                    assert_eq!(der_weights[i].ncols(), self.weights[i].ncols());
+                    assert_eq!(der_bias[i].nrows(), self.bias[i].nrows());
+                    assert_eq!(der_bias[i].ncols(), self.bias[i].ncols());
+
+                    self.weights[i] -= self.alpha * &der_weights[i];
+                    self.bias[i] -= self.alpha * &der_bias[i];
+                }
+            }*/
+            (der_weights, der_bias)
+            
+        }
+
+
+        fn adam(&mut self, mut velocity_weights: Vec<DMatrix<f32>>, mut velocity_bias: Vec<DMatrix<f32>>, mut momentum_weights: Vec<DMatrix<f32>>, mut momentum_bias: Vec<DMatrix<f32>>, beta1:f32, beta2:f32, epsilon:f32){
+            let mut velocity_weights_hat: Vec<DMatrix<f32>> = Vec::new();
+            let mut velocity_bias_hat: Vec<DMatrix<f32>> = Vec::new();
+            let mut momentum_weights_hat: Vec<DMatrix<f32>> = Vec::new();
+            let mut momentum_bias_hat: Vec<DMatrix<f32>> = Vec::new();
+            
+            for i in 0..self.layers{
+                momentum_weights[i] = beta1 * &momentum_weights[i] + (1.0 - beta1) * &self.accum_grad_weights[i];
+                momentum_bias[i] = beta1 * &momentum_bias[i] + (1.0 - beta1) * &self.accum_grad_bias[i];
+
+                momentum_weights_hat.push(&momentum_weights[i] / (1.0 - beta1.powi(i as i32)));
+                momentum_bias_hat.push(&momentum_bias[i] / (1.0 - beta1.powi(i as i32)));
+
+                velocity_weights[i] = beta2 * &velocity_weights[i] + (1.0 - beta2) * &self.accum_grad_weights[i].map(|x| x.powi(2));
+                velocity_bias[i] = beta2 * &velocity_bias[i] + (1.0 - beta2) * &self.accum_grad_bias[i].map(|x| x.powi(2));
+
+                velocity_weights_hat.push(&velocity_weights[i] / (1.0 - beta2.powi(i as i32)));
+                velocity_bias_hat.push(&velocity_bias[i] / (1.0 - beta2.powi(i as i32)));
+
+                self.weights[i] -= self.alpha * &momentum_weights_hat[i].map(|x| x / (velocity_weights_hat[i].map(|x| x.sqrt()) + epsilon));
+                self.bias[i] -= self.alpha * &momentum_bias_hat[i].map(|x| x / (velocity_bias_hat[i].map(|x| x.sqrt()) + epsilon));
+            }
+            unimplemented!();
+        }
+        fn rmsprop(&mut self, mut velocity_weights: Vec<DMatrix<f32>>, mut velocity_bias: Vec<DMatrix<f32>>, beta:f32){
+            for i in 0..self.layers {
+                velocity_weights[i] = beta * &velocity_weights[i] + (1.0 - beta) * &self.accum_grad_weights[i];
+                velocity_bias[i] = beta * &velocity_bias[i] + (1.0 - beta) * &self.accum_grad_bias[i];
+
+                self.weights[i] -= self.alpha * &velocity_weights[i];
+                self.bias[i] -= self.alpha * &velocity_bias[i];
+                
+            }
+        }
     
 }
+
+
 
 
