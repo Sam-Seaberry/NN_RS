@@ -106,7 +106,8 @@ fn main() {
         println!("Backward {}: {}", i, backwards[i]);
     }*/
 
-    let mut nn = nn::NeuralNetwork::new(vec![784, 1000, 400, 60, 10], 0.0001);
+
+    let mut nn = nn::NeuralNetwork::new(vec![784, 1000, 400, 60, 10],nn::Activation::Sigmoid, nn::Cost::CrossEntropy, nn::Optimizer::Adam, 0.0001);
     let x = DMatrix::from_row_slice(4, 2, &[
           0.0, 0.0, 
           1.0, 0.0, 
@@ -124,6 +125,11 @@ fn main() {
     
     let epochs = 10000;
     nn.train(images_list[0..5].to_vec(), truth[0..5].to_vec(), epochs);
+
+    for i in images_list[0..5].to_vec(){
+        let output = nn.predict(i);
+        println!("Output: {:?}", output);
+    }
     
     //for i in 0..4 {
       //  let output = nn.predict(x.transpose().clone());
