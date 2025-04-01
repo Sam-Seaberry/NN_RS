@@ -22,7 +22,9 @@ fn main() {
             println!("Error: {:?}", e);
         }
     }
-    
+    for i in &lables_list{
+        println!("{:?}", i);
+    }
     let architecture = vec![2, 30, 10, 30, 1];
     let mut filters: Vec<DMatrix<f32>> = Vec::new();
     for i in 0..architecture.len() -1{
@@ -107,7 +109,12 @@ fn main() {
     }*/
 
 
-    let mut nn = nn::NeuralNetwork::new(vec![784, 1000, 400, 60, 10],nn::Activation::Sigmoid, nn::Cost::CrossEntropy, nn::Optimizer::Adam, 0.0001);
+    let mut nn = nn::NeuralNetwork::new(vec![784, 128, 64, 10],
+        nn::Activation::Sigmoid, 
+        nn::Cost::CrossEntropy, 
+        nn::Optimizer::Adam, 
+        0.0000025);
+
     let x = DMatrix::from_row_slice(4, 2, &[
           0.0, 0.0, 
           1.0, 0.0, 
@@ -123,13 +130,31 @@ fn main() {
     
     let truth = convert_to_matrices(lables_list.clone(), 10, 1);
     
-    let epochs = 10000;
-    nn.train(images_list[0..5].to_vec(), truth[0..5].to_vec(), epochs);
+    let epochs = 2000;
+    nn.train(images_list[0..100].to_vec(), truth[0..100].to_vec(), epochs);
 
-    for i in images_list[0..5].to_vec(){
-        let output = nn.predict(i);
-        println!("Output: {:?}", output);
+    
+    let output = nn.predict(images_list[100..200].to_vec());
+    let mut truthcnt = 0;
+
+    for i in 0..output.len() {
+        let (max_value, max_index) = find_max_and_index(&output[i]);
+        let (_max_value_truth, max_index_truth) = find_max_and_index(&truth[i]);
+        if max_index == max_index_truth{
+            truthcnt += 1;
+            println!("Correct");
+        }else{
+            println!("Incorrect");
+        }
+        
+
+        println!("Output: {}, Value: {:.3}, Index: {:?}", i, max_value, max_index);
+        println!("Truth: {:?}", truth[i]);
     }
+    println!("Accuracy: {}", truthcnt as f32 / output.len() as f32);
+    
+    
+    //println!("Truth: {:?}", truth[0..5].to_vec());
     
     //for i in 0..4 {
       //  let output = nn.predict(x.transpose().clone());
@@ -145,4 +170,23 @@ fn convert_to_matrices(data: Vec<Vec<f32>>, rows: usize, cols: usize) -> Vec<DMa
             DMatrix::from_vec(rows, cols, flat_vec)})
         .collect()
 }
+
+
+fn find_max_and_index(matrix: &DMatrix<f32>) -> (f32, (usize, usize)) {
+    let mut max_value = f32::MIN;
+    let mut max_index = (0, 0);
+
+    for i in 0..matrix.nrows() {
+        for j in 0..matrix.ncols() {
+            let value = matrix[(i, j)];
+            if value > max_value {
+                max_value = value;
+                max_index = (i, j);
+            }
+        }
+    }
+    
+    (max_value, max_index)
+}
+
 

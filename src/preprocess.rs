@@ -69,10 +69,13 @@ pub fn load_data(dataset_name: &str) -> Result<Vec<MnistImage>, std::io::Error> 
     let mut ret: Vec<MnistImage> = Vec::new();
 
     for (image, classification) in images.into_iter().zip(classifications.into_iter()) {
-        ret.push(MnistImage {
-            image,
-            classification: value_to_vec(classification as f32),
-        })
+        //simplifing training on only two digits 1 and 0
+        if classification == 1 | 0 {
+            ret.push(MnistImage {
+                image,
+                classification: value_to_vec(classification as f32),
+            });
+        }
     }
 
     Ok(ret)
