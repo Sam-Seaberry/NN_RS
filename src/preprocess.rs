@@ -51,6 +51,7 @@ impl MnistData {
 
 pub fn load_data(dataset_name: &str) -> Result<Vec<MnistImage>, std::io::Error> {
     let filename = format!("{}-labels.idx1-ubyte", dataset_name);
+    println!("Loading labels from: {}", filename);
     let label_data = &MnistData::new(&(File::open(filename))?)?;
     let filename = format!("{}-images.idx3-ubyte", dataset_name);
     let images_data = &MnistData::new(&(File::open(filename))?)?;
@@ -60,7 +61,7 @@ pub fn load_data(dataset_name: &str) -> Result<Vec<MnistImage>, std::io::Error> 
     for i in 0..images_data.sizes[0] as usize {
         let start = i * image_shape;
         let image_data = images_data.data[start..start + image_shape].to_vec();
-        let image_data: Vec<f64> = image_data.into_iter().map(|x| x as f64 / 255.).collect();
+        let image_data: Vec<f64> = image_data.into_iter().map(|x| x as f64 / 255.0).collect();
         images.push(Array2::from_shape_vec((image_shape, 1), image_data).unwrap());
     }
 
@@ -69,13 +70,18 @@ pub fn load_data(dataset_name: &str) -> Result<Vec<MnistImage>, std::io::Error> 
     let mut ret: Vec<MnistImage> = Vec::new();
 
     for (image, classification) in images.into_iter().zip(classifications.into_iter()) {
-        //simplifing training on only two digits 1 and 0
-        if classification == 1 | 0 {
+        //simplifing training on subset of data
+        /*if classification == 8 || classification == 9 || classification == 0{
             ret.push(MnistImage {
                 image,
                 classification: value_to_vec(classification as f32),
             });
-        }
+        }*/
+        ret.push(MnistImage {
+            image,
+            classification: value_to_vec(classification as f32),
+        })
+
     }
 
     Ok(ret)
@@ -114,4 +120,17 @@ fn value_to_vec(value: f32)->Vec<f32>{
         }
     }
     ret
+}
+
+pub fn convert_to_mnist_image(matrix: DMatrix<f32>, classification: Vec<f32>) -> MnistImage {
+    let rows = matrix.nrows();
+    let cols = matrix.ncols();
+    let data: Vec<f64> = matrix.iter().map(|&x| x as f64).collect();
+
+    let image = Array2::from_shape_vec((rows, cols), data).expect("Shape mismatch");
+
+    MnistImage {
+        image,
+        classification,
+    }
 }

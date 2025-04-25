@@ -1,30 +1,36 @@
 use nalgebra::{DMatrix};
 use rand::prelude::*;
 use core::arch;
-use std::env;
+use std::{env, vec};
 use std::fs::File;
+use tokio::task;
+use std::sync::Arc;
 mod convolve;
 mod nn;
 mod preprocess;
+use matrix_display::*;
 
-fn main() {
+
+#[tokio::main]
+async fn main() {
     env::set_var("RUST_BACKTRACE", "1");
     let mut images_list:Vec<DMatrix<f32>> = Vec::new();
+    let mut images_raw:Vec<DMatrix<f32>> = Vec::new();
     let mut lables_list:Vec<Vec<f32>> = Vec::new();
-    match preprocess::load_data("./res/t10k"){
+    //match preprocess::load_data("${workspaceFolder}/nn/res/t10k"){
+    match preprocess::load_data("./res/t10k"){   
         Ok(images) => {
             for i in 0..images.len(){
                 images_list.push(preprocess::create_ndmatrix_from_mnist_image(&images[i], vec![1,784]));
                 lables_list.push(images[i].classification.clone());
+                images_raw.push(preprocess::create_ndmatrix_from_mnist_image(&images[i], vec![28,28]));
             }
         },
         Err(e) => {
             println!("Error: {:?}", e);
         }
     }
-    for i in &lables_list{
-        println!("{:?}", i);
-    }
+    
     let architecture = vec![2, 30, 10, 30, 1];
     let mut filters: Vec<DMatrix<f32>> = Vec::new();
     for i in 0..architecture.len() -1{
@@ -109,11 +115,11 @@ fn main() {
     }*/
 
 
-    let mut nn = nn::NeuralNetwork::new(vec![784, 128, 64, 10],
+    let mut nn = nn::NeuralNetwork::new(vec![784, 128, 10],
         nn::Activation::Sigmoid, 
         nn::Cost::CrossEntropy, 
         nn::Optimizer::Adam, 
-        0.0000025);
+        0.01);
 
     let x = DMatrix::from_row_slice(4, 2, &[
           0.0, 0.0, 
@@ -130,26 +136,53 @@ fn main() {
     
     let truth = convert_to_matrices(lables_list.clone(), 10, 1);
     
-    let epochs = 2000;
-    nn.train(images_list[0..100].to_vec(), truth[0..100].to_vec(), epochs);
+    
+    //random_shuffle_with_corralation(&mut images_list, &mut lables_list);
+    let epochs = 400;
+
+    let mut one = 0;
+    let mut eight = 0;
+    let mut nine = 0;
+    for i in &truth[0..200]{
+        let (_truth_num, index) = find_max_and_index(&i);
+        
+        match index.0 as i32{
+            0=> one+=1,
+            8=> eight+=1,
+            9=> nine+=1,
+            _=> ()
+        } 
+        
+    }
+    println!("Percentages: One: {} \n Eight: {} \n Nine: {}", (one as f32/200 as f32), (eight as f32 /200 as f32), (nine as f32 /200 as f32));
+    
+    nn.train(images_list[0..9900].to_vec(), 
+        truth[0..9900].to_vec(),
+        images_list[(images_list.len() - 100)..images_list.len()].to_vec(), 
+        truth[(images_list.len() - 100)..truth.len()].to_vec(), 
+        epochs, 
+        128);
+    //nn.train_concurrent(images_list[0..800].to_vec(), truth[0..800].to_vec(), epochs, 10, 100);
 
     
-    let output = nn.predict(images_list[100..200].to_vec());
+    /*let output = nn.predict(images_list[2900..images_list.len()].to_vec());
     let mut truthcnt = 0;
 
     for i in 0..output.len() {
         let (max_value, max_index) = find_max_and_index(&output[i]);
         let (_max_value_truth, max_index_truth) = find_max_and_index(&truth[i]);
-        if max_index == max_index_truth{
+        println!("---------------------------------------------------");
+        if max_index.0 as i32 == max_index_truth.0 as i32{
             truthcnt += 1;
             println!("Correct");
         }else{
             println!("Incorrect");
         }
         
-
+        println!("Max index output: {:?}, max index truth {:?}", max_index.0, max_index_truth.0);
         println!("Output: {}, Value: {:.3}, Index: {:?}", i, max_value, max_index);
         println!("Truth: {:?}", truth[i]);
+        println!("--------------------------------------------------- \n\n");
     }
     println!("Accuracy: {}", truthcnt as f32 / output.len() as f32);
     
@@ -159,7 +192,7 @@ fn main() {
     //for i in 0..4 {
       //  let output = nn.predict(x.transpose().clone());
         //println!("XOR input: {}, output: {:.3}", &x.row(i), output);
-    //}
+    //}*/
     
 }
 
@@ -187,6 +220,35 @@ fn find_max_and_index(matrix: &DMatrix<f32>) -> (f32, (usize, usize)) {
     }
     
     (max_value, max_index)
+}
+
+
+fn random_shuffle_with_corralation(images: &mut Vec<DMatrix<f32>>, labels: &mut Vec<Vec<f32>>) {
+    let mut rng = rand::thread_rng();
+    let len = images.len();
+    let mut indices: Vec<usize> = (0..len).collect();
+    indices.shuffle(&mut rng);
+
+    let shuffled_images: Vec<DMatrix<f32>> = indices.iter().map(|&i| images[i].clone()).collect();
+    let shuffled_labels: Vec<Vec<f32>> = indices.iter().map(|&i| labels[i].clone()).collect();
+
+    *images = shuffled_images;
+    *labels = shuffled_labels;
+}
+
+fn display_mnist_matrix(matrix: &DMatrix<f32>) {
+    // Unicode grayscale blocks, from light to dark
+    let shades = [' ', '░', '▒', '▓', '█'];
+
+    for row in 0..matrix.nrows() {
+        for col in 0..matrix.ncols() {
+            let val = matrix[(row, col)];
+            let idx = (val * (shades.len() as f32 - 1.0)).round() as usize;
+            let ch = shades[idx.min(shades.len() - 1)];
+            print!("{}", ch);
+        }
+        println!();
+    }
 }
 
 
