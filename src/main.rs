@@ -133,11 +133,9 @@ async fn main() {
     let truth  = DMatrix::from_row_slice(1, 4, &[
         0.0, 1.0, 1.0, 0.0
     ]);
-    
+    random_shuffle_with_corralation(&mut images_list, &mut lables_list);
     let truth = convert_to_matrices(lables_list.clone(), 10, 1);
     
-    
-    //random_shuffle_with_corralation(&mut images_list, &mut lables_list);
     let epochs = 400;
 
     let mut one = 0;
@@ -223,17 +221,17 @@ fn find_max_and_index(matrix: &DMatrix<f32>) -> (f32, (usize, usize)) {
 }
 
 
-fn random_shuffle_with_corralation(images: &mut Vec<DMatrix<f32>>, labels: &mut Vec<Vec<f32>>) {
-    let mut rng = rand::thread_rng();
-    let len = images.len();
-    let mut indices: Vec<usize> = (0..len).collect();
-    indices.shuffle(&mut rng);
+fn random_shuffle_with_corralation(
+    images: &mut Vec<DMatrix<f32>>, 
+    labels: &mut Vec<Vec<f32>>
+) {
+    let mut combined: Vec<_> = images.drain(..).zip(labels.drain(..)).collect();
+    combined.shuffle(&mut thread_rng());
 
-    let shuffled_images: Vec<DMatrix<f32>> = indices.iter().map(|&i| images[i].clone()).collect();
-    let shuffled_labels: Vec<Vec<f32>> = indices.iter().map(|&i| labels[i].clone()).collect();
-
-    *images = shuffled_images;
-    *labels = shuffled_labels;
+    for (img, lbl) in combined {
+        images.push(img);
+        labels.push(lbl);
+    }
 }
 
 fn display_mnist_matrix(matrix: &DMatrix<f32>) {

@@ -1,4 +1,4 @@
-use nalgebra::{DMatrix, U28, Dynamic};
+use nalgebra::{DMatrix, RowDVector};
 use rand::prelude::*;
 use std::env;
 use rayon::prelude::*;
@@ -17,6 +17,8 @@ pub struct NeuralNetwork<'a> {
     velocity_weights: Vec<DMatrix<f32>>,
     velocity_bias: Vec<DMatrix<f32>>,
     activations: Vec<DMatrix<f32>>,
+    gamma: Vec<DMatrix<f32>>,
+    beta: Vec<DMatrix<f32>>,
     neurons: Vec<usize>,
     activation: Option<Activation>,
     cost: Option<Cost>,
@@ -51,6 +53,9 @@ impl<'a> NeuralNetwork<'a> {
         let mut weights: Vec<DMatrix<f32>> = Vec::new();
         let mut bias: Vec<DMatrix<f32>> = Vec::new();
 
+        let mut gamma: Vec<DMatrix<f32>> = Vec::new();
+        let mut beta: Vec<DMatrix<f32>> = Vec::new();
+
         let mut accumulated_weight_gradients: Vec<DMatrix<f32>> = Vec::new();
         let mut accumulated_bias_gradients: Vec<DMatrix<f32>> = Vec::new();
 
@@ -68,6 +73,9 @@ impl<'a> NeuralNetwork<'a> {
         for i in 0..layers {
             weights.push(NeuralNetwork::xavier_init(neurons[i + 1], neurons[i], Some(&activation)));
             bias.push(NeuralNetwork::xavier_init(neurons[i + 1], 1, Some(&activation)));
+
+            gamma.push(DMatrix::from_element(neurons[i + 1], neurons[i], 1.0));
+            beta.push(DMatrix::zeros(neurons[i + 1], neurons[i]));
 
             accumulated_weight_gradients.push(DMatrix::zeros(neurons[i + 1], neurons[i]));
             accumulated_bias_gradients.push(DMatrix::zeros(neurons[i + 1], 1));
@@ -89,6 +97,8 @@ impl<'a> NeuralNetwork<'a> {
             velocity_weights,
             velocity_bias,
             activations,
+            gamma,
+            beta,
             neurons,
             activation: Some(activation),
             cost: Some(cost),
@@ -136,11 +146,13 @@ impl<'a> NeuralNetwork<'a> {
                 }
                 
                 for j in current..next {
+                    let (centered, xhat, stdev1, stdev, mean) = self.feedfrwd_batched(&input[current..next].to_vec());
                     let i = input[j].transpose();
                     
                     //NeuralNetwork::show_data(&input[j], &truth[j]);
                     let y = truth[j].clone();
                     self.feedfrwd(&i);
+
                     let (batch_d_weights, batch_d_bias) = self.backprop_test(&i, &y);
     
                     for layer_index in 0..self.layers {
@@ -176,7 +188,7 @@ impl<'a> NeuralNetwork<'a> {
     
                     }
                     Some(Optimizer::Adam) => {
-                        self.adam( 0.9, 0.999, 0.00000008);
+                        self.adam( 0.9, 0.999, 0.000008);
                     }
                     Some(Optimizer::RMSprop) => {
                         self.rmsprop( 0.9);
@@ -348,16 +360,22 @@ impl<'a> NeuralNetwork<'a> {
         output
     }   
     
-    pub fn cost(&self, y_hat: &DMatrix<f32>, y: &DMatrix<f32>) -> f32 {
+    fn cost(&self, y_hat: &DMatrix<f32>, y: &DMatrix<f32>) -> f32 {
         assert_eq!(y_hat.nrows(), y.nrows());
     
         let epsilon = 1e-10; // Avoid log(0)
         let y_hat = y_hat.map(|x| x.max(epsilon).min(1.0 - epsilon)); // Clipping values
-        //let losses = y.zip_map(&y_hat, |yi, y_hat_i| {
-       //     -(yi * y_hat_i.ln() + (1.0 - yi) * (1.0 - y_hat_i).ln())
-        //});
-        let losses = y.zip_map(&y_hat, |yi, y_hat_i| -(yi * y_hat_i.ln()));
-        // Manually compute the mean
+
+        let losses = match self.activation {
+
+            Some(Activation::Softmax) => y.zip_map(&y_hat, |yi, y_hat_i| -(yi * y_hat_i.ln())),
+
+            Some(Activation::Sigmoid) => y.zip_map(&y_hat, |yi, y_hat_i| { -(yi * y_hat_i.ln() + (1.0 - yi) * (1.0 - y_hat_i).ln())}),
+
+            _ => y.zip_map(&y_hat, |yi, y_hat_i| -(yi * y_hat_i.ln() + (1.0 - yi) * (1.0 - y_hat_i).ln())),
+
+        };
+       
         let sum_of_losses: f32 = losses.sum();
         let num_elements = y.nrows() * y.ncols();
         sum_of_losses / num_elements as f32
@@ -366,10 +384,6 @@ impl<'a> NeuralNetwork<'a> {
     
     fn sigmoid(arr: &mut DMatrix<f32>) {
         arr.iter_mut().for_each(|x| *x = 1.0 / (1.0 + (-*x).exp()));
-    }
-
-    fn sigmoid_prime(arr: &mut DMatrix<f32>) {
-        arr.iter_mut().for_each(|x| *x = *x * (1.0 - *x));
     }
 
     fn sigmoid_prime_return(mut arr: DMatrix<f32>)->DMatrix<f32>{
@@ -407,10 +421,6 @@ impl<'a> NeuralNetwork<'a> {
         arr.iter_mut().zip(exp_values.iter()).for_each(|(x, &exp_x)| *x = exp_x / sum_exp);
     }
 
-    fn softmax_prime(arr: &mut DMatrix<f32>) {
-        arr.iter_mut().for_each(|x| *x = *x * (1.0 - *x));
-    }
-
     fn softmax_prime_return(mut arr: DMatrix<f32>)->DMatrix<f32>{
         let met = arr.map(|x| x * (1.0 - x));
         met
@@ -441,12 +451,11 @@ impl<'a> NeuralNetwork<'a> {
         }
     }
     
-    pub fn feedfrwd(&mut self, input: &DMatrix<f32>) {
+    fn feedfrwd(&mut self, input: &DMatrix<f32>) {
         let mut input = input.clone();
         assert_eq!(self.weights.len(), self.layers);
         assert_eq!(self.bias.len(), self.layers);
 
-        // Store input activation (Important for backpropagation)
         /*if self.itteration > 1 {
             self.activations.clear();  // Ensure we start fresh for each forward pass
 
@@ -462,13 +471,18 @@ impl<'a> NeuralNetwork<'a> {
             //let mut z = &self.weights[i] * &input + NeuralNetwork::repeat_bias(&self.bias[i], input.ncols());
             let mut z = &self.weights[i] * &input + &self.bias[i]; 
 
+            //insert batch norm here
+
             if i == self.layers - 1 {
                 match self.activation {
                     Some(Activation::Softmax) => {
                         NeuralNetwork::softmax(&mut z);
                         
                     }
-                    _ => {
+                    Some(Activation::Sigmoid) => {
+                        NeuralNetwork::sigmoid(&mut z);
+                    }
+                    _=>{
                         NeuralNetwork::softmax(&mut z);
                     }
                 }
@@ -486,139 +500,170 @@ impl<'a> NeuralNetwork<'a> {
         
     }
     
+    fn feedfrwd_batched(&mut self, input: &Vec<DMatrix<f32>>)->(Vec<DMatrix<f32>>, Vec<RowDVector<f32>>, Vec<DMatrix<f32>>, Vec<RowDVector<f32>>, Vec<RowDVector<f32>>) {
+        let mut input = input.clone();
+        assert_eq!(self.weights.len(), self.layers);
+        assert_eq!(self.bias.len(), self.layers);
+
+        /*if self.itteration > 1 {
+            self.activations.clear();  // Ensure we start fresh for each forward pass
+
+        } */
+        for matrix in self.activations.iter_mut() {
+            matrix.fill(0.0);
+        }
+        let mut centered: Vec<DMatrix<f32>> = Vec::new();
+        let mut var: Vec<RowDVector<f32>> = Vec::new();
+        let mut x_hat: Vec<DMatrix<f32>> = Vec::new();
+        let mut std_inv1: Vec<RowDVector<f32>> = Vec::new();
+        let mut std_inv: Vec<RowDVector<f32>> = Vec::new();
+
+        
+
+        for i in 0..self.layers-1{
+            // Step 1: Compute pre-activations for all batch inputs
+            //matrix in from batch size x neurons. where each new matrix is a column contaning the activations for each neuron
+            let xi: Vec<DMatrix<f32>> = input.iter()
+                .map(|x| &self.weights[i] * x.transpose() + &self.bias[i])
+                .collect();
+
+            // Step 2: Stack into a matrix: [features x batch_size]
+            //turns Vec<DMatrix<f32>> into a DMatrix<f32>. essentially just combining the columns of each matrix into a single matrix
+            let stacked= DMatrix::from_columns(&xi.iter().map(|m| m.column(0)).collect::<Vec<_>>());
+
+            let mean = stacked.row_mean();
+
+            centered.push(DMatrix::from_fn(stacked.nrows(), stacked.ncols(), |i, j| stacked[(i, j)] - mean[j]));
+
+            var.push(centered[centered.len() - 1].pow(2).row_mean());
+
+            std_inv1.push(var[var.len() - 1].map(|v| (v + 1e-8).sqrt()));
+
+            std_inv.push(std_inv1[std_inv1.len() - 1].map(|v| 1.0 / v));
+
+            x_hat.push(DMatrix::from_fn(centered[centered.len() - 1].nrows(), centered[centered.len() - 1].ncols(), |i, j| centered[centered.len() - 1][(i, j)] * std_inv[std_inv.len() - 1][j]));
+
+            // Step 5: Scale and shift
+            let yi = &x_hat[x_hat.len() - 1] * &self.gamma[i] + &self.beta[i];
+            
+            let mut yt = DMatrix::from_row_slice(yi.nrows(), 1, &yi.column_sum().as_slice());
+            yt /= input.len() as f32;
+
+            if i == self.layers - 1 {
+                match self.activation {
+                    Some(Activation::Softmax) => {
+                        NeuralNetwork::softmax(&mut yt);
+                    }
+                    Some(Activation::Sigmoid) => {
+                        NeuralNetwork::sigmoid(&mut yt);
+                    }
+                    _=>{
+                        NeuralNetwork::softmax(&mut yt);
+                    }
+                };
+            } else {
+                // Hidden layer activation
+                NeuralNetwork::leakyrelu(&mut yt);
+            }
+
+            self.activations[i] = yt.clone();
+
+            input = (0..yt.nrows())
+                .map(|i| yt.rows(i, 1).into_owned())
+                .collect();
+
+            
+            
+        }
+
+        (centered, var, x_hat, std_inv1, std_inv)
+        
+        
+    }
     
     // Custom function to repeat bias across columns
     pub fn repeat_bias(bias: &DMatrix<f32>, num_cols: usize) -> DMatrix<f32> {
         DMatrix::from_fn(bias.nrows(), num_cols, |i, _| bias[(i, 0)])
     }
-    
 
-    fn backprop(&mut self, 
-        input: DMatrix<f32>,
-        truth: DMatrix<f32>)-> (Vec<DMatrix<f32>>, Vec<DMatrix<f32>>) {
+
+    fn backprop_test(&mut self, 
+        input: &DMatrix<f32>,
+        truth: &DMatrix<f32>)-> (Vec<DMatrix<f32>>, Vec<DMatrix<f32>>) {
             let mut der_weights = Vec::new();
             let mut der_bias = Vec::new();
             let mut passthrough: DMatrix<f32> = DMatrix::zeros(self.neurons[self.layers - 1], truth.ncols());
+            
 
             for cnt in (0..self.layers).rev(){
                 if cnt == self.layers -1 {
                     // Output layer
-                    //NeuralNetwork::softmax_prime(&mut activations[cnt].clone());
-                    //forward pass uses softmax so we need to use the derivative of softmax
-                    //d_softmax = y_hat * (1 - y_hat)
-                    let mut d_activation = self.activations[cnt].clone();
-                    NeuralNetwork::softmax_prime(&mut d_activation);
-                    //d_activation = d_activation.zip_map(&truth, |x, y| x - y);
-                    d_activation = (self.activations[cnt].clone() - &truth).component_mul(&d_activation);
-                    
-                    assert_eq!(d_activation.nrows(), self.neurons[cnt + 1]);
-                    assert_eq!(d_activation.ncols(), truth.ncols());
-        
-                    // Weights derivative
-                    let d_weights = if cnt > 0 {
-                        &d_activation * &self.activations[cnt - 1].transpose()
-                    } else {
-                        &d_activation * &input.transpose()
+                    //Activation functions assume BCE with one-hot encoding
+                    let d_activation = match self.activation {
+                        Some(Activation::Softmax) => {
+                            self.activations[cnt].clone() - truth //.component_mul(&NeuralNetwork::softmax_prime_return(self.activations[cnt].clone()));
+                        }
+                        Some(Activation::Sigmoid) => {
+                            self.activations[cnt].clone() - truth
+                        }
+                        _=>{
+                            self.activations[cnt].clone() - truth
+                        }
+                        
                     };
-                   
-
-                    assert_eq!(d_weights.nrows(), self.neurons[cnt + 1]);
-                    assert_eq!(d_weights.ncols(), self.neurons[cnt]);
-        
+                    
+                    // Weights derivative
+                    let d_weights = (&d_activation * &self.activations[cnt - 1].transpose()).map(|x| x / d_activation.nrows() as f32);
+                
                     // Bias derivative
                     let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
-                        .map(|i| d_activation.row(i).sum())
+                        .map(|i| d_activation.row(i).sum() / d_activation.nrows() as f32)
                         .collect::<Vec<f32>>());
-                    assert_eq!(d_bias.nrows(), self.neurons[cnt + 1]);
-                    assert_eq!(d_bias.ncols(), 1);
-        
+
                     // Layer derivative
-                    //passthrough  = self.weights[cnt].transpose().zip_map(&d_activation, |x, y| x* y);
                     passthrough = &self.weights[cnt].transpose() * &d_activation;
-                    
-                    assert_eq!(passthrough.nrows(), self.neurons[cnt]);
-                    assert_eq!(passthrough.ncols(), truth.ncols());
+
         
                     der_weights.push(d_weights);
                     der_bias.push(d_bias);
 
 
-                    continue;
 
-
-                }
-                else if cnt == 0{
-                    // Input layer
-                    assert_eq!(input.nrows(), self.neurons[0]);
-                    //sigmoid prime
-                    //let d_activations = &activations[cnt].component_mul(&(&activations[cnt].map(|x| x * (1.0 - x))));
-                    //relu prime
-                    let mut d_activations = self.activations[cnt].clone();
-                    for x in d_activations.iter_mut() {
-                        *x = if *x > 0.0 { 1.0 } else { 0.0 };
-                    }
-
-                    //let d_activations = self.activations[cnt].clone();
-                    assert_eq!(d_activations.nrows(), self.neurons[cnt + 1]);
+                }else if cnt == 0{
                     
-                    // dc/dz = dc/da * da/dz
-                    let d_activation = &d_activations.component_mul(&passthrough);
-                    assert_eq!(d_activation.nrows(), self.neurons[cnt + 1]);
-                    assert_eq!(d_activation.ncols(), passthrough.ncols());
+                    let d_activation = NeuralNetwork::leakyrelu_prime(self.activations[cnt].clone()).component_mul(&passthrough);
 
-                    let d_weights = d_activation * &input.transpose();
-                    assert_eq!(d_weights.nrows(), self.neurons[cnt + 1]);
-                    assert_eq!(d_weights.ncols(), self.neurons[cnt]);
+                    let d_weights = (&d_activation * input.transpose()).map(|x| x / d_activation.nrows() as f32);
 
                     let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
-                        .map(|i| d_activation.row(i).sum())
+                        .map(|i| d_activation.row(i).sum() / d_activation.nrows() as f32)
                         .collect::<Vec<f32>>());
-
-                    assert_eq!(d_bias.nrows(), self.neurons[cnt + 1]);
-                    assert_eq!(d_bias.ncols(), 1);
-
-                    //println!("Weights: {:?}", der_weights[1].ncols());
-                    //println!("Bias: {:?}", self.weights[1].clone().ncols());
 
                     der_weights.push(d_weights);
                     der_bias.push(d_bias);
 
-                    continue;
+
+
+                }else{
+
+                    // dc/dz = dc/da * da/dz
+                    let d_activation = NeuralNetwork::leakyrelu_prime(self.activations[cnt].clone()).component_mul(&passthrough);
+
+                    // Weights derivative
+                    let d_weights = (&d_activation * &self.activations[cnt - 1].transpose()).map(|x| x / d_activation.nrows() as f32);
+                
+                    // Bias derivative
+                    let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                        .map(|i| d_activation.row(i).sum() / d_activation.nrows() as f32)
+                        .collect::<Vec<f32>>());
+                
+                    // Layer derivative
+                    passthrough = &self.weights[cnt].transpose() * &d_activation;
+
+                    der_weights.push(d_weights);
+                    der_bias.push(d_bias);
 
                 }
-                //sigmoid prime
-                let mut d_activations = self.activations[cnt].clone();
-                for x in d_activations.iter_mut() {
-                    *x = if *x > 0.0 { 1.0 } else { 0.0 };
-                }
-                //relu prime
-                //NeuralNetwork::relu_prime(&mut self.activations[cnt].clone());
-                //let d_activations = self.activations[cnt].clone();
-                    
-                assert_eq!(d_activations.nrows(), self.neurons[cnt + 1]);
-                // dc/dz = dc/da * da/dz
-                let d_activation = d_activations.component_mul(&passthrough);
-                assert_eq!(d_activation.nrows(), self.neurons[cnt + 1]);
-                assert_eq!(d_activation.ncols(), passthrough.ncols());
-
-                // Weights derivative
-                let d_weights = &d_activation * &self.activations[cnt - 1].transpose();
-                assert_eq!(d_weights.nrows(), self.neurons[cnt + 1]);
-                assert_eq!(d_weights.ncols(), self.neurons[cnt]);
-
-                // Bias derivative
-                let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
-                    .map(|i| d_activation.row(i).sum())
-                    .collect::<Vec<f32>>());
-                assert_eq!(d_bias.nrows(), self.neurons[cnt + 1]);
-                assert_eq!(d_bias.ncols(), 1);
-
-                // Layer derivative
-                passthrough = &self.weights[cnt].transpose() * d_activation;
-                assert_eq!(passthrough.nrows(), self.neurons[cnt]);
-
-                der_weights.push(d_weights);
-                der_bias.push(d_bias);
 
             }
 
@@ -629,81 +674,135 @@ impl<'a> NeuralNetwork<'a> {
             
         }
 
-        fn backprop_test(&mut self, 
-            input: &DMatrix<f32>,
-            truth: &DMatrix<f32>)-> (Vec<DMatrix<f32>>, Vec<DMatrix<f32>>) {
-                let mut der_weights = Vec::new();
-                let mut der_bias = Vec::new();
-                let mut passthrough: DMatrix<f32> = DMatrix::zeros(self.neurons[self.layers - 1], truth.ncols());
+//(centered, var, x_hat, std_inv1, std_inv)
+        fn backprop_batched(&mut self, 
+            input: &Vec<DMatrix<f32>>,
+            truth: &DMatrix<f32>, 
+            mean: Vec<DMatrix<f32>>, 
+            var: Vec<RowDVector<f32>>, 
+            xhat: Vec<DMatrix<f32>>, 
+            rho: Vec<RowDVector<f32>>,
+            tau: Vec<RowDVector<f32>>){
+                for i in input.iter(){
+                    
+                    let mut passthrough: DMatrix<f32> = DMatrix::zeros(self.neurons[self.layers - 1], truth.ncols());
+                    
+                    for cnt in (0..self.layers).rev(){
+                        if cnt == self.layers -1 {
+
+                            // Output layer
+                            //Activation functions assume BCE with one-hot encoding
+                            let d_activation = match self.activation {
+                                Some(Activation::Softmax) => {
+                                    self.activations[cnt].clone() - truth //.component_mul(&NeuralNetwork::softmax_prime_return(self.activations[cnt].clone()));
+                                }
+                                Some(Activation::Sigmoid) => {
+                                    self.activations[cnt].clone() - truth
+                                }
+                                _=>{
+                                    self.activations[cnt].clone() - truth
+                                }
+                                
+                            };
+
+                            let d_beta  = DMatrix::from_row_slice(self.neurons[cnt + 1], 1, &(0..self.neurons[cnt + 1])
+                            .map(|i| d_activation.row(i).sum())
+                            .collect::<Vec<f32>>());
+
+                            let d_gamma = d_beta * xhat;
+
+                            let d_xhat = d_activation*self.gamma[cnt];
+
+                            let d_ivar = (d_xhat*mean).sum();
+
+                            let d_stdev1 = d_xhat * tau;
+
+                            let d_sqvar = d_ivar * (-1/rho);
+
+                            let d_var = 1/((var - 0.000001).sqrt());
+
+                            let d_sq = 1/input.len() * d_var;
+
+                            let d_stdev2 = 2*mean*d_sq;
+
+                            let d_x1 = (d_stdev1 + d_stdev2);
+
+                            let d_dev = -1/(d_stdev1 + d_stdev2).sum();
+
+                            let d_x2 = 1/input.len() * d_dev;
+
+                            let d_x = d_x1 + d_x2;
+
+                            d_activation = d_x;
+                            
+                            // Weights derivative
+                            let d_weights = (&d_activation * &self.activations[cnt - 1].transpose()).map(|x| x / d_activation.nrows() as f32);
+                        
+                            // Bias derivative
+                            let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                                .map(|i| d_activation.row(i).sum() / d_activation.nrows() as f32)
+                                .collect::<Vec<f32>>());
+        
+                            // Layer derivative
+                            passthrough = &self.weights[cnt].transpose() * &d_activation;
+        
                 
-    
-                for cnt in (0..self.layers).rev(){
-                    if cnt == self.layers -1 {
-                        // Output layer
-                        let d_activation = self.activations[cnt].clone() - truth; //.component_mul(&NeuralNetwork::softmax_prime_return(self.activations[cnt].clone()));
+                            self.accum_grad_weights[cnt] += d_weights.clone();
+                            self.accum_grad_bias[cnt] += d_bias.clone();
+        
+        
+        
+                        }else if cnt == 0{
+                            
+                            let d_activation = NeuralNetwork::leakyrelu_prime(self.activations[cnt].clone()).component_mul(&passthrough);
+        
+                            let d_weights = (&d_activation * i.transpose()).map(|x| x / d_activation.nrows() as f32);
+        
+                            let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                                .map(|i| d_activation.row(i).sum() / d_activation.nrows() as f32)
+                                .collect::<Vec<f32>>());
+        
+                            self.accum_grad_weights[cnt] += d_weights.clone();
+                            self.accum_grad_bias[cnt] += d_bias.clone();
+        
+        
+        
+                        }else{
+        
+                            // dc/dz = dc/da * da/dz
+                            let d_activation = NeuralNetwork::leakyrelu_prime(self.activations[cnt].clone()).component_mul(&passthrough);
+        
+                            // Weights derivative
+                            let d_weights = (&d_activation * &self.activations[cnt - 1].transpose()).map(|x| x / d_activation.nrows() as f32);
                         
-                        // Weights derivative
-                        let d_weights = (&d_activation * &self.activations[cnt - 1].transpose()).map(|x| x / d_activation.nrows() as f32);
-                       
-                        // Bias derivative
-                        let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
-                            .map(|i| d_activation.row(i).sum() / d_activation.nrows() as f32)
-                            .collect::<Vec<f32>>());
-
-                        // Layer derivative
-                        passthrough = &self.weights[cnt].transpose() * &d_activation;
-
-            
-                        der_weights.push(d_weights);
-                        der_bias.push(d_bias);
-
-    
-    
-                    }else if cnt == 0{
+                            // Bias derivative
+                            let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                                .map(|i| d_activation.row(i).sum() / d_activation.nrows() as f32)
+                                .collect::<Vec<f32>>());
                         
-                        let d_activation = NeuralNetwork::leakyrelu_prime(self.activations[cnt].clone()).component_mul(&passthrough);
-    
-                        let d_weights = (&d_activation * input.transpose()).map(|x| x / d_activation.nrows() as f32);
-
-                        let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
-                            .map(|i| d_activation.row(i).sum() / d_activation.nrows() as f32)
-                            .collect::<Vec<f32>>());
-
-                        der_weights.push(d_weights);
-                        der_bias.push(d_bias);
-
-
-    
-                    }else{
-
-                        // dc/dz = dc/da * da/dz
-                        let d_activation = NeuralNetwork::leakyrelu_prime(self.activations[cnt].clone()).component_mul(&passthrough);
-
-                        // Weights derivative
-                        let d_weights = (&d_activation * &self.activations[cnt - 1].transpose()).map(|x| x / d_activation.nrows() as f32);
-                    
-                        // Bias derivative
-                        let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
-                            .map(|i| d_activation.row(i).sum() / d_activation.nrows() as f32)
-                            .collect::<Vec<f32>>());
-                    
-                        // Layer derivative
-                        passthrough = &self.weights[cnt].transpose() * &d_activation;
-    
-                        der_weights.push(d_weights);
-                        der_bias.push(d_bias);
-
+                            // Layer derivative
+                            passthrough = &self.weights[cnt].transpose() * &d_activation;
+        
+                            self.accum_grad_weights[cnt] += d_weights.clone();
+                            self.accum_grad_bias[cnt] += d_bias.clone();
+        
+                        }
+        
                     }
-    
+        
+                    
                 }
-    
-                der_weights.reverse();
-                der_bias.reverse();
-    
-                (der_weights, der_bias)
-                
+
+                for layer_index in 0..self.layers{
+                    self.accum_grad_weights[layer_index] /= input.len() as f32;
+                    self.accum_grad_bias[layer_index] /= input.len() as f32;
+                }
+
+
+                    
             }
     
+
 
 
 
@@ -1216,6 +1315,143 @@ impl<'a> NeuralNetwork<'a> {
 
             (der_weights, der_bias)
 
+            
+        }
+
+
+            fn backprop(&mut self, 
+        input: DMatrix<f32>,
+        truth: DMatrix<f32>)-> (Vec<DMatrix<f32>>, Vec<DMatrix<f32>>) {
+            let mut der_weights = Vec::new();
+            let mut der_bias = Vec::new();
+            let mut passthrough: DMatrix<f32> = DMatrix::zeros(self.neurons[self.layers - 1], truth.ncols());
+
+            for cnt in (0..self.layers).rev(){
+                if cnt == self.layers -1 {
+                    // Output layer
+                    //NeuralNetwork::softmax_prime(&mut activations[cnt].clone());
+                    //forward pass uses softmax so we need to use the derivative of softmax
+                    //d_softmax = y_hat * (1 - y_hat)
+                    let mut d_activation = self.activations[cnt].clone();
+                    NeuralNetwork::softmax_prime(&mut d_activation);
+                    //d_activation = d_activation.zip_map(&truth, |x, y| x - y);
+                    d_activation = (self.activations[cnt].clone() - &truth).component_mul(&d_activation);
+                    
+                    assert_eq!(d_activation.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_activation.ncols(), truth.ncols());
+        
+                    // Weights derivative
+                    let d_weights = if cnt > 0 {
+                        &d_activation * &self.activations[cnt - 1].transpose()
+                    } else {
+                        &d_activation * &input.transpose()
+                    };
+                   
+
+                    assert_eq!(d_weights.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_weights.ncols(), self.neurons[cnt]);
+        
+                    // Bias derivative
+                    let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                        .map(|i| d_activation.row(i).sum())
+                        .collect::<Vec<f32>>());
+                    assert_eq!(d_bias.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_bias.ncols(), 1);
+        
+                    // Layer derivative
+                    //passthrough  = self.weights[cnt].transpose().zip_map(&d_activation, |x, y| x* y);
+                    passthrough = &self.weights[cnt].transpose() * &d_activation;
+                    
+                    assert_eq!(passthrough.nrows(), self.neurons[cnt]);
+                    assert_eq!(passthrough.ncols(), truth.ncols());
+        
+                    der_weights.push(d_weights);
+                    der_bias.push(d_bias);
+
+
+                    continue;
+
+
+                }
+                else if cnt == 0{
+                    // Input layer
+                    assert_eq!(input.nrows(), self.neurons[0]);
+                    //sigmoid prime
+                    //let d_activations = &activations[cnt].component_mul(&(&activations[cnt].map(|x| x * (1.0 - x))));
+                    //relu prime
+                    let mut d_activations = self.activations[cnt].clone();
+                    for x in d_activations.iter_mut() {
+                        *x = if *x > 0.0 { 1.0 } else { 0.0 };
+                    }
+
+                    //let d_activations = self.activations[cnt].clone();
+                    assert_eq!(d_activations.nrows(), self.neurons[cnt + 1]);
+                    
+                    // dc/dz = dc/da * da/dz
+                    let d_activation = &d_activations.component_mul(&passthrough);
+                    assert_eq!(d_activation.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_activation.ncols(), passthrough.ncols());
+
+                    let d_weights = d_activation * &input.transpose();
+                    assert_eq!(d_weights.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_weights.ncols(), self.neurons[cnt]);
+
+                    let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                        .map(|i| d_activation.row(i).sum())
+                        .collect::<Vec<f32>>());
+
+                    assert_eq!(d_bias.nrows(), self.neurons[cnt + 1]);
+                    assert_eq!(d_bias.ncols(), 1);
+
+                    //println!("Weights: {:?}", der_weights[1].ncols());
+                    //println!("Bias: {:?}", self.weights[1].clone().ncols());
+
+                    der_weights.push(d_weights);
+                    der_bias.push(d_bias);
+
+                    continue;
+
+                }
+                //sigmoid prime
+                let mut d_activations = self.activations[cnt].clone();
+                for x in d_activations.iter_mut() {
+                    *x = if *x > 0.0 { 1.0 } else { 0.0 };
+                }
+                //relu prime
+                //NeuralNetwork::relu_prime(&mut self.activations[cnt].clone());
+                //let d_activations = self.activations[cnt].clone();
+                    
+                assert_eq!(d_activations.nrows(), self.neurons[cnt + 1]);
+                // dc/dz = dc/da * da/dz
+                let d_activation = d_activations.component_mul(&passthrough);
+                assert_eq!(d_activation.nrows(), self.neurons[cnt + 1]);
+                assert_eq!(d_activation.ncols(), passthrough.ncols());
+
+                // Weights derivative
+                let d_weights = &d_activation * &self.activations[cnt - 1].transpose();
+                assert_eq!(d_weights.nrows(), self.neurons[cnt + 1]);
+                assert_eq!(d_weights.ncols(), self.neurons[cnt]);
+
+                // Bias derivative
+                let d_bias = DMatrix::from_row_slice(d_weights.nrows(), 1, &(0..d_weights.nrows())
+                    .map(|i| d_activation.row(i).sum())
+                    .collect::<Vec<f32>>());
+                assert_eq!(d_bias.nrows(), self.neurons[cnt + 1]);
+                assert_eq!(d_bias.ncols(), 1);
+
+                // Layer derivative
+                passthrough = &self.weights[cnt].transpose() * d_activation;
+                assert_eq!(passthrough.nrows(), self.neurons[cnt]);
+
+                der_weights.push(d_weights);
+                der_bias.push(d_bias);
+
+            }
+
+            der_weights.reverse();
+            der_bias.reverse();
+
+            (der_weights, der_bias)
             
         }
         */
