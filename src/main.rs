@@ -116,7 +116,7 @@ async fn main() {
 
 
     let mut nn = nn::NeuralNetwork::new(vec![784, 128, 10],
-        nn::Activation::Sigmoid, 
+        nn::Activation::Softmax, 
         nn::Cost::CrossEntropy, 
         nn::Optimizer::Adam, 
         0.01);
@@ -159,7 +159,7 @@ async fn main() {
         images_list[(images_list.len() - 100)..images_list.len()].to_vec(), 
         truth[(images_list.len() - 100)..truth.len()].to_vec(), 
         epochs, 
-        128);
+        127);
     //nn.train_concurrent(images_list[0..800].to_vec(), truth[0..800].to_vec(), epochs, 10, 100);
 
     
